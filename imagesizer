@@ -1,0 +1,50 @@
+#!/bin/sh
+# Requires dc and crictl (and being run under kubectl debug)
+
+crictl -r unix:///host/run/containerd/containerd.sock images | \
+    grep -v IMAGE | \
+    awk '{print $4}' > sizes
+
+# We use dc for all our arithmetic operations, even those that could be run
+# via shell arithmetic
+
+echo "" > sz.dc
+
+# neither busybox nor GNU dc implement scientific notation, alas.
+grep GB sizes | rev | cut -c 3- | rev > sz.g
+grep MB sizes | rev | cut -c 3- | rev > sz.m
+grep kB sizes | rev | cut -c 3- | rev > sz.k
+# If there's anything smaller than 1kB we ignore it.  It obviously won't
+# contribute much in a world where our stack containers are 5 GB.
+
+totalcount=0  # Count of images
+for i in g m k; do
+    count=$(echo "$(wc -l sz.${i} | awk '{print $1}') 1 - p" | dc)
+    totalcount=$(echo "${totalcount} ${count} + p" | dc)
+    for j in $(seq $count); do
+	echo "+" >> sz.${i}
+    done
+    # Expand the suffix the obvious way.
+    case $i in
+	g)
+	    echo "1000000000 * p" >> sz.${i}
+	    ;;
+	m)
+	    echo "1000000 * p" >> sz.${i}
+	    ;;
+	k)
+	    echo "1000 * p" >> sz.${i}
+	    ;;
+	*)
+	    ;;
+    esac
+    # Put the total size in sz.dc
+    dc sz.${i} >> sz.dc
+    # rm sz.${i}
+done
+# Add up our sizes
+echo "+ + p" >> sz.dc
+totalsize=$(dc sz.dc)
+# rm sz.dc
+# We will consume this output to build image stats over time/nodes
+echo "${totalcount} ${totalsize}"
